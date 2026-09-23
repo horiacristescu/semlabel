@@ -13,7 +13,7 @@ Every record gets a confidence from 0 to 1 per category (example output):
 {"id": "a1b2", "title": "New inference chip claims 3x lower cost per token", "tags": {"ai_hardware": 0.97, "slop": 0.04}}
 ```
 
-I built it to filter my news feeds. I had many categories and thousands of posts a day, and running an LLM on every post was slow and expensive for what is basically a sorting job.
+I built it to filter my news feeds. I had around twenty categories and hundreds of posts a day, and running an LLM on every post was slow and expensive for what is basically a sorting job.
 
 ## Install
 
