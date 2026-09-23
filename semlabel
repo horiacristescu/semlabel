@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# Wrapper for semlabel.py — call from anywhere.
+# Strips Claude Code env vars so nested `claude -p` works.
+DIR="$(cd "$(dirname "$0")" && pwd)"
+unset CLAUDECODE CLAUDE_CODE_SSE_PORT CLAUDE_CODE_ENTRYPOINT
+exec "$DIR/.venv/bin/python" "$DIR/src/semlabel.py" "$@"

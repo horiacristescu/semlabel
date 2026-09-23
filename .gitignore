@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+*.pyc
+.DS_Store
+# embedding caches written next to your data
+*.embeds
+*.embeds.npy
