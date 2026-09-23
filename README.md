@@ -28,49 +28,63 @@ git clone https://github.com/horiacristescu/semlabel.git && cd semlabel
 
 ## Compared with Jev
 
-[Jev](https://flaviocopes.com/jev/) from TypeSafe AI is marketed as a "System One" decision model. You send it a piece of text and a question, and it returns a typed answer (yes/no, a choice, or a score) with a probability. Under the "decision engine" name, it's a general classifier that takes its question at call time: in effect a cross-encoder with several output heads, one step above embedding-based RAG. semlabel attacks the same problem, cheap typed decisions over text, from the other end.
+[Jev](https://flaviocopes.com/jev/) from TypeSafe AI solves the same problem: you give it a piece of text and a question, and it gives back a label with a probability. It's a large general model behind a hosted API, and you ask it again for every post. semlabel instead has an LLM label a few hundred of your posts once, learns a small vector per label from them, and runs locally from then on.
 
-### Speed
+### How fast is it?
 
-| | Jev | semlabel |
-|---|---|---|
-| One record, one question | ~70–500 ms (hosted API) | 5–11 ms to embed + 0.01 ms to score |
-| One record, 20 questions | 20 calls | the same embedding + 0.15 ms for all 20 |
-| Batch throughput | network-bound | 109 records/s full text, 1,000/s titles (CPU); 16M scoring decisions/s once embedded |
-| Re-scoring an archive after changing a concept | full cost again | scoring only, since embeddings are cached |
-| Cost | ~$0.042 per million input tokens | local compute, after a few LLM calls for training |
-
-The semlabel numbers are measured on an Apple M5 Pro, CPU only, with real posts averaging 1,070 characters:
-
-| Stage | Time |
-|---|---|
-| Cold start (import + model load) | 4.2 s once. `embed-server` keeps the model loaded between calls |
-| Embed a single record, warm | 11 ms full text, 5 ms title only (p50) |
-| Embed in batch | 9 ms/record full text, 1 ms/record title only |
-| Score 20 concepts, dot product + conformal | 0.15 ms for a single record, 1.2 µs/record in batch |
-
-Embedding takes nearly all of the time. Once a record is embedded, decisions are practically free.
-
-### Domain calibration
-
-Jev promises calibrated probabilities from one general model, the same weights for every customer, but publishes nothing about in-domain evaluation or fine-tuning. A probability is only accurate relative to the data it was calibrated on. If "relevant", "sensitive" or "allow" is rarer or more common in your domain than in theirs, the same numbers come out systematically too high or too low, and you have no labeled set to check them against.
-
-semlabel is calibrated on **your** data by construction. Each concept's confidence comes from ranking a new score against held-out scores of that concept's own labeled examples (conformal prediction, below). Those examples ship inside the concept file, where you can inspect, correct and retrain them. `show` reports held-out recall and specificity for every concept.
+**About 10 ms per post on a laptop CPU, and adding labels is free.** A post is embedded once, and then each label is a single multiplication. Checking one label or twenty takes the same time.
 
 | | Jev | semlabel |
 |---|---|---|
-| Model | one general hosted model | one small vector per concept, fit on your data |
-| Where judgment happens | at every call, in one forward pass | once, offline, in an LLM labeling loop |
-| Defining a class | a question at call time; no training | a description + a few minutes of training |
-| Output | typed answer + probability (calibration claimed, not shown in-domain) | conformal confidence from held-out, in-domain examples |
-| Evidence behind a decision | none exposed | the stored positive and negative examples |
-| Changing the taxonomy | edit the question, instantly | retrain the concept (minutes) |
-| Deployment | hosted API only | local; data stays on your machine after training |
-| Expressiveness | can judge content that needs some reasoning | topical and stylistic directions only |
+| Label one post | ~100 ms | ~10 ms |
+| Check one post against 20 labels | 20 calls, ~2 s | still ~10 ms |
+| Label a million posts, 20 labels each | 20 million API calls | ~2.5 hours on one laptop (17 minutes for titles only) |
+| Re-label an archive after changing a label | all of it again | seconds, since the embeddings are cached |
 
-**Where each fits.** Jev, or an LLM, fits when the question changes on every call and there's nothing to train on, such as "is this chunk relevant to *this* query". semlabel fits when the concept is stable, the volume is high, the data has to stay local, or you need to know why a record got its label. The two also combine: an LLM or Jev labels the training rounds, and semlabel turns those labels into a classifier that costs nothing to run.
+### How much does it cost?
 
-Jev figures are from public descriptions of TypeSafe's published numbers, as of September 2026.
+**Training a label takes about 15,000 LLM tokens, once. Running it costs nothing.**
+
+| | Jev | semlabel |
+|---|---|---|
+| Setting up a label | nothing; you write the question | about 15,000 LLM tokens, once (5 short `claude -p` calls) |
+| A million posts, one label | ~$11 | $0 |
+| A million posts, 20 labels | ~$230 | $0 |
+| Changing your mind about a label | nothing to redo | retrain that label: another ~15,000 tokens |
+
+Jev's costs assume posts of about 1,000 characters (~270 tokens) at its published $0.042 per million input tokens. They don't count the question itself. With a Claude subscription, the training calls come out of your plan.
+
+### Do I need the cloud, or a powerful machine?
+
+**No. Any laptop from the last several years is enough.** semlabel runs on the CPU, and no GPU is needed.
+
+- **Memory:** about 0.5 GB of RAM while running.
+- **Disk:** about 0.75 GB, most of it PyTorch; the model itself is 90 MB.
+- **Network:** only for installing and for training with `--auto`. Tagging, search and everything else run offline, so your data never leaves the machine.
+
+Jev is hosted only: every post you classify is sent to its API.
+
+### Can I trust the scores?
+
+**semlabel's scores are calibrated on your own data, and it shows you how well they hold up.** Jev's are calibrated on someone else's.
+
+Jev returns a probability from one general model that every customer shares. A probability is only accurate relative to the data it was calibrated on. If what you're looking for is rarer or more common in your data than in theirs, the numbers come out systematically too high or too low. Jev publishes no way to check this on your own data, and no way to tune it.
+
+semlabel keeps every example it was trained on inside the label's file, and computes its confidence from them:
+
+- A confidence of **0.95** means the post scored higher than almost every known non-match and as high as a typical known match. Both comparisons use *your* examples for *this* label.
+- `show` reports how often the label is right on examples it wasn't trained on, so you know how far to trust it before you rely on it.
+- When a label is wrong, you can see why (the examples are right there) and fix it: move a post to the other side with `add`, and the label is refit and recalibrated in a second.
+
+Core idea 3 below explains how the calibration works.
+
+### Which should I use?
+
+- **Jev, or an LLM,** when the question changes on every call, when you have no data to learn from, or when the answer takes real reasoning, such as "is this claim true?".
+- **semlabel** when the labels are stable and there's a lot of text, the data has to stay on your machine, or you want to see why a post got its label.
+- **Both together:** an LLM, or Jev, labels the training examples, and semlabel turns those labels into a classifier that costs nothing to run.
+
+Jev's figures are from public descriptions of TypeSafe's published numbers, as of September 2026. The semlabel figures were measured on an Apple M5 Pro, CPU only, with real posts averaging about 1,000 characters. There's a breakdown under [Benchmark details](#benchmark-details).
 
 ## Core idea 1: move the reasoning to training time
 
@@ -186,6 +200,19 @@ Manual labeling: without `--auto`, `train` prints each batch with short ids, and
 ### Caching
 
 The first time a data file is embedded, semlabel writes `data.jsonl.embeds.npy` next to it, and later runs skip the embedding. The cache is keyed by byte offset, so appending records is fine. If you edit records in place, delete the `.npy` file. `--no-cache` bypasses the cache.
+
+### Benchmark details
+
+Apple M5 Pro, CPU only, default model, real posts averaging 1,070 characters. Peak memory was 480 MB.
+
+| Stage | Time |
+|---|---|
+| Starting up (loading the model) | 4.2 s, once. `embed-server` keeps the model loaded between calls |
+| Embedding one post | 11 ms for full text, 5 ms for a title |
+| Embedding in bulk | 109 posts/s full text, about 1,000/s titles |
+| Scoring 20 labels | 0.15 ms for one post; 1.2 µs per post in bulk (16 million decisions/s) |
+
+Embedding takes nearly all of the time. Scoring is so cheap that the number of labels hardly matters.
 
 ## Choosing an embedding model
 
