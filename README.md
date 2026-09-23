@@ -92,6 +92,10 @@ You can also compare categories by the cosine between their vectors. On my data 
 
 And because most training examples are near misses, texts that look related but aren't, `w` learns where a category ends, not only where it is.
 
+![Nearest neighbors vs a trained semlabel category](images/cosine-vs-semlabel.png)
+
+On the left, searching by cosine takes the closest texts to a query, and those include related texts that don't match. On the right, the trained category draws a boundary that picks out the matches from between the non-matches.
+
 ## Core idea 3: each category carries its training data
 
 A category file has the description, all labeled examples, the calibration scores and `w`.
