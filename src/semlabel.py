@@ -8,6 +8,10 @@ import tempfile
 import numpy as np
 
 MODEL_NAME = "Snowflake/snowflake-arctic-embed-xs"
+# Arctic-embed is asymmetric: short queries matched against records need this prefix
+# (the model's own "query" prompt). Records are embedded without it. Set to "" for
+# symmetric models such as all-MiniLM-L6-v2.
+QUERY_PREFIX = "Represent this sentence for searching relevant passages: "
 EMBED_SOCKET = "/tmp/semlabel-embed.sock"
 EMBED_DTYPE = np.dtype([('offset', 'i8'), ('embedding', 'f4', (384,))])
 
@@ -605,7 +609,7 @@ def train_command(data_path, concept_path, input_fn=None, auto=False, trace_path
     embeddings = embed(texts, cache_path=cache_path, keys=offset_keys)
 
     # Embed seed description (no offset — uses content hash)
-    seed_emb = embed([description], cache_path=cache_path)[0]
+    seed_emb = embed([QUERY_PREFIX + description], cache_path=cache_path)[0]
 
     # Load existing labels if continuing training
     labels = {}  # index -> bool
@@ -1028,7 +1032,7 @@ def search_command(query, data_path, k=10, no_cache=False, by_id=False):
         if 'offset' in arr.dtype.names:
             npy_offsets = arr['offset']
             embeddings = arr['embedding']
-            query_emb = embed([query])[0]
+            query_emb = embed([QUERY_PREFIX + query])[0]
             scores = embeddings @ query_emb
             top_indices = np.argsort(-scores)[:k]
             # Seek to byte offsets for just the top-k results
@@ -1063,7 +1067,7 @@ def search_command(query, data_path, k=10, no_cache=False, by_id=False):
             sys.exit(1)
         query_emb = embeddings[match_idx]
     else:
-        query_emb = embed([query])[0]
+        query_emb = embed([QUERY_PREFIX + query])[0]
 
     scores = embeddings @ query_emb
 

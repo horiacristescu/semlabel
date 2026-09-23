@@ -201,11 +201,21 @@ The default is [`Snowflake/snowflake-arctic-embed-xs`](https://huggingface.co/Sn
 
 The quickest test for a candidate is to train one concept you care about with each model on the same data, then compare with `show`. If a model is better for your data, the positives come out cleaner and fewer boundary records need correcting.
 
-To switch models, set `MODEL_NAME` at the top of `src/semlabel.py`. If the new model's dimension isn't 384, also replace the `384` literals in the same file (`grep -n 384 src/semlabel.py`). Then:
+To switch models, set `MODEL_NAME` at the top of `src/semlabel.py`. If the new model's dimension isn't 384, also replace the `384` literals in the same file (`grep -n 384 src/semlabel.py`). Also set `QUERY_PREFIX`, the text added to search queries and concept descriptions before they're embedded. Arctic-embed and BGE models expect an instruction prefix there (see the model card). Symmetric models like MiniLM expect `""`. Then:
 
 - **Retrain every concept.** A concept vector only means something in the space of the model that produced it. The file records the model in its `model` field.
 - **Delete the `*.embeds.npy` caches.** They don't record which model produced them.
 - **Restart the embed server** if it's running (`./semlabel embed-stop`).
+
+## Using it from Claude Code
+
+`skills/semlabel/SKILL.md` is a [Claude Code skill](https://docs.claude.com/en/docs/claude-code/skills) that teaches an agent the whole workflow: survey the data, write a concept description, train, inspect, correct labels by id, and tag new data with sensible thresholds. It also covers the **agent-as-labeler** mode. There, the agent reads candidates from `search`, labels them itself with `add`, and repeats on the uncertain band, with no separate `claude -p` calls. To install it:
+
+```bash
+mkdir -p ~/.claude/skills && ln -s "$PWD/skills/semlabel" ~/.claude/skills/semlabel
+```
+
+Then ask Claude Code something like *"use semlabel to build a concept for AI hardware news from data.jsonl and tag today's feed"*. The skill expects `SEMLABEL` to point at the `semlabel` wrapper in this repo.
 
 ## Limitations
 
@@ -213,3 +223,7 @@ To switch models, set `MODEL_NAME` at the top of `src/semlabel.py`. If the new m
 - Confidences are rank-based and calibrated on a boundary-heavy sample, not exact probabilities. 0.5 ignores the base rate; use a higher cutoff for rare concepts.
 - Input is truncated at 2000 characters. Long documents are represented by their beginning.
 - Training is only as good as the labels. With `--auto`, precision depends on the description being specific enough for the LLM to judge edge cases.
+
+## License
+
+Apache License 2.0. See [LICENSE](LICENSE).
