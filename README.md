@@ -66,11 +66,23 @@ Jev is hosted only: every post you classify is sent to its API.
 
 ### Can I trust the scores?
 
-**semlabel's scores are calibrated on your own data, and it shows you how well they hold up.** Jev's are calibrated on someone else's.
+**semlabel's scores are calibrated on your own data, and it shows you how well they hold up. Jev's are calibrated on data TypeSafe generated, and there's no way to recalibrate them on yours.**
 
-Jev returns a probability from one general model that every customer shares. A probability is only accurate relative to the data it was calibrated on. If what you're looking for is rarer or more common in your data than in theirs, the numbers come out systematically too high or too low. Jev publishes no way to check this on your own data, and no way to tune it.
+What TypeSafe says about Jev:
 
-semlabel keeps every example it was trained on inside the label's file, and computes its confidence from them:
+- It's trained with RLCD, reinforcement learning that rewards a stated probability for matching how often the answer is actually right. There's no paper, reward function, dataset description or calibration figure.
+- The training data is synthetic. The founder: *"We made an early bet that we will be making all of our data"* ([source](https://en.wikipedia.org/wiki/Jev_(AI_model))).
+- The same weights serve every customer. *"Jev is not fine-tuned or LoRA-adapted with customer data"* ([docs](https://docs.typesafe.ai/models)). You can adapt it only through the prompt.
+- Its own list of known weak spots includes *"weak numerical calibration"* for score answers, and yes/no probabilities that aren't mutually consistent ([docs](https://docs.typesafe.ai/model-jaggedness/jev-1.13)).
+
+What independent tests found:
+
+- **Well calibrated on familiar ground, off on new ground.** On public benchmarks, Jev's calibration error was about as low as the noise floor. On rule-based support tickets it hadn't seen, the error was 4.4× the floor. On one task, it claimed about 74% confidence and was right 45% of the time ([study](https://github.com/scienthoon/jev-ood-calibration)).
+- **The error changes direction.** Yes/no answers came out underconfident, while choice and score answers came out overconfident. The same model looked under-confident on one dataset and over-confident on another ([study](https://github.com/scienthoon/jev-ood-calibration), [audit](https://github.com/jujumilk3/jev-calibration-audit)). A single fixed threshold can't correct for both.
+- **It can work well on a narrow task.** One agent tool-call risk test found the confidence good enough to route on ([benchmark](https://webofmike.com/jev-benchmark/)).
+- **The fix is always your own labels.** One phishing test went from 62.6% with a single Jev question to 95% with five questions plus a regression trained on labeled examples: *"The 95% is not Jev. It is Jev plus your labelled data plus a regression you maintain"* ([article](https://www.beri.net/article/typesafe-jev-typed-decision-model-calibration-decomposition-shadow-eval)). TypeSafe's own [cookbook](https://docs.typesafe.ai/cookbooks/autoresearch_feature_discovery) does the same thing: it trains a separate model on your labels, using Jev's answers as inputs.
+
+semlabel builds that last step in. Every label keeps the examples it was trained on, and computes its confidence from them:
 
 - A confidence of **0.95** means the post scored higher than almost every known non-match and as high as a typical known match. Both comparisons use *your* examples for *this* label.
 - `show` reports how often the label is right on examples it wasn't trained on, so you know how far to trust it before you rely on it.
