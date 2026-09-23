@@ -1,9 +1,9 @@
 # semlabel
 
-semlabel labels text with categories you describe in plain English. An LLM labels a few hundred examples from your data once, then semlabel does the rest locally, in about 10 ms per record, with no more LLM calls.
+semlabel labels text with categories you describe in plain English. It works on any kind of text: articles, social posts, documents, support tickets, agent transcripts and responses. An LLM labels a few hundred examples from your data once, then semlabel does the rest locally, in about 10 ms per text, with no more LLM calls.
 
 ```bash
-./semlabel train concepts/ai_hardware.json posts.jsonl --auto   # LLM labels examples, once
+./semlabel train concepts/ai_hardware.json data.jsonl --auto    # LLM labels examples, once
 ./semlabel tag concepts/ today.jsonl > tagged.jsonl             # runs locally from now on
 ```
 
@@ -30,17 +30,17 @@ On Linux without a GPU, install the CPU build of PyTorch first (`pip install tor
 
 ## Compared with Jev
 
-[Jev](https://flaviocopes.com/jev/) by TypeSafe AI does the same kind of job. You send text and a question, it sends back an answer with a probability. The difference is that Jev is a big hosted model you call for every post and every question, while semlabel asks the LLM once, at training time, and then runs on your machine.
+[Jev](https://flaviocopes.com/jev/) by TypeSafe AI does the same kind of job. You send text and a question, it sends back an answer with a probability. The difference is that Jev is a big hosted model you call for every text and every question, while semlabel asks the LLM once, at training time, and then runs on your machine.
 
 ### How fast is it?
 
-About 10 ms per post on a laptop CPU. Almost all of that is computing the post's embedding. Checking it against a category is one dot product, so 20 categories cost about the same as one.
+About 10 ms for a text of 1,000 characters on a laptop CPU, and about 1 ms for a short one like a title. Almost all of that is computing its embedding. Checking it against a category is one dot product, so 20 categories cost about the same as one.
 
 | | Jev | semlabel |
 |---|---|---|
-| Label one post | about 100 ms | about 10 ms |
-| One post, 20 labels | 20 calls, about 2 s | still about 10 ms |
-| A million posts, 20 labels each | 20 million API calls | about 2.5 hours on one laptop, 17 minutes if you only use titles |
+| Label one text | about 100 ms | about 10 ms |
+| One text, 20 labels | 20 calls, about 2 s | still about 10 ms |
+| A million texts, 20 labels each | 20 million API calls | about 2.5 hours on one laptop, 17 minutes for short texts like titles |
 | Re-label an archive after changing a label | everything again | a few seconds, embeddings are cached |
 
 ### How much does it cost?
@@ -50,15 +50,15 @@ Training a category takes about 15,000 LLM tokens in 5 short calls. After that i
 | | Jev | semlabel |
 |---|---|---|
 | Set up a label | nothing, you write the question | about 15,000 LLM tokens, once |
-| A million posts, one label | about $11 | $0 |
-| A million posts, 20 labels | about $230 | $0 |
+| A million texts, one label | about $11 | $0 |
+| A million texts, 20 labels | about $230 | $0 |
 | Change a label's definition | nothing to redo | retrain, another 15,000 tokens |
 
-The Jev numbers assume posts of about 1,000 characters (270 tokens) at their published $0.042 per million input tokens, not counting the question. With a Claude subscription the training calls come out of your plan.
+The Jev numbers assume texts of about 1,000 characters (270 tokens) at their published $0.042 per million input tokens, not counting the question. With a Claude subscription the training calls come out of your plan.
 
 ### Do I need the cloud or a powerful machine?
 
-No. It runs on CPU, no GPU needed, about 0.5 GB of RAM and 0.75 GB of disk (mostly PyTorch). It only needs the network to install and to train with `--auto`. Labeling runs offline, so your data never leaves your machine. With Jev every post goes to their API.
+No. It runs on CPU, no GPU needed, about 0.5 GB of RAM and 0.75 GB of disk (mostly PyTorch). It only needs the network to install and to train with `--auto`. Labeling runs offline, so your data never leaves your machine. With Jev every text goes to their API.
 
 ### Can I trust the scores?
 
@@ -70,21 +70,21 @@ Independent tests are mixed. On public benchmarks the probabilities were very go
 
 When people got Jev to work well, they brought their own labels. In a phishing test one Jev question was right 62.6% of the time, and five questions plus a small regression trained on labeled emails got 95%. As the author put it, "The 95% is not Jev. It is Jev plus your labelled data plus a regression you maintain" ([article](https://www.beri.net/article/typesafe-jev-typed-decision-model-calibration-decomposition-shadow-eval)). TypeSafe's own [cookbook](https://docs.typesafe.ai/cookbooks/autoresearch_feature_discovery) does the same, training a separate model on your labels using Jev answers as inputs.
 
-semlabel just starts there. Each category keeps its labeled examples and computes confidence from them. A confidence of 0.95 means the post scored higher than almost all known non-matches and as high as a typical known match, for that category, on your data. `show` tells you how often a category is right on examples it was not trained on. When a label is wrong you can look at the examples behind it and fix it with `add`, which refits and recalibrates in about a second.
+semlabel just starts there. Each category keeps its labeled examples and computes confidence from them. A confidence of 0.95 means the text scored higher than almost all known non-matches and as high as a typical known match, for that category, on your data. `show` tells you how often a category is right on examples it was not trained on. When a label is wrong you can look at the examples behind it and fix it with `add`, which refits and recalibrates in about a second.
 
 ### Which should I use?
 
 Jev or an LLM when the question changes every time, when you have no data, or when the answer needs real reasoning, like "is this claim true". semlabel when the categories are stable and there is a lot of text, when the data must stay local, or when you want to see why something got its label. You can also combine them: let the LLM or Jev label the training examples and let semlabel do the daily work.
 
-Jev numbers are from TypeSafe's published figures and the tests linked above, as of September 2026. semlabel numbers are measured on an Apple M5 Pro, CPU only, with real posts of about 1,000 characters. Details under [Benchmark details](#benchmark-details).
+Jev numbers are from TypeSafe's published figures and the tests linked above, as of September 2026. semlabel numbers are measured on an Apple M5 Pro, CPU only, with real news posts of about 1,000 characters. Details under [Benchmark details](#benchmark-details).
 
 ## Core idea 1: do the reasoning at training time
 
 If you run an LLM on every record, you pay for reasoning on every record, forever. A one-pass model like Jev is cheaper, but it reads the input once and answers. It can't think in steps and never sees its own answer.
 
-I moved the reasoning into training, where it happens once and can iterate. The LLM (`claude -p`) labels the 50 records closest to your description. semlabel fits a classifier on those labels, then sends the LLM the 40 records it is least sure about, the ones near the boundary. The new labels move the boundary, the next round asks about what became uncertain, and after 3 to 5 rounds it settles. What remains is a vector, and labeling a new post is a dot product with it.
+I moved the reasoning into training, where it happens once and can iterate. The LLM (`claude -p`) labels the 50 records closest to your description. semlabel fits a classifier on those labels, then sends the LLM the 40 records it is least sure about, the ones near the boundary. The new labels move the boundary, the next round asks about what became uncertain, and after 3 to 5 rounds it settles. What remains is a vector, and labeling a new text is a dot product with it.
 
-The limit is that a category must be something a linear boundary can separate in embedding space. Topics and styles work well, like AI hardware news, clickbait or sports. Things that need thinking about a specific post don't work, like whether a claim is true or whether a post contradicts the previous one. If a category stays bad after a few corrections, use an LLM for it.
+The limit is that a category must be something a linear boundary can separate in embedding space. Topics and styles work well, like AI hardware news, clickbait or sports. Things that need thinking about a specific text don't work, like whether a claim is true or whether a text contradicts the previous one. If a category stays bad after a few corrections, use an LLM for it.
 
 ## Core idea 2: the classifier is an embedding
 
@@ -92,11 +92,11 @@ A linear classifier on embeddings is just a weight vector with the same shape as
 
 You can use `w` like any other embedding, for example as a query in a vector database built with the same model. It often finds the clear members of a category better than the description does. On my data the science vector found a receptor study and a new bamboo plastic, while searching with the science description found an AI benchmark post and a date header.
 
-Interestingly, `w` is almost orthogonal to its own description (cosine 0.0 to 0.1). The regression removes what all posts have in common and keeps what separates matches from non-matches. Raw scores are small even for clear matches, it is the ranking that matters.
+Interestingly, `w` is almost orthogonal to its own description (cosine 0.0 to 0.1). The regression removes what all texts have in common and keeps what separates matches from non-matches. Raw scores are small even for clear matches, it is the ranking that matters.
 
-You can also compare categories by the cosine between their vectors. On my data health and science are +0.41, clickbait and web media -0.16. Many posts belong to two topics, so some overlap is normal.
+You can also compare categories by the cosine between their vectors. On my data health and science are +0.41, clickbait and web media -0.16. Many texts belong to two topics, so some overlap is normal.
 
-And because most training examples are near misses, posts that look related but aren't, `w` learns where a category ends, not only where it is.
+And because most training examples are near misses, texts that look related but aren't, `w` learns where a category ends, not only where it is.
 
 ## Core idea 3: each category carries its training data
 
@@ -104,7 +104,7 @@ A category file has the description, all labeled examples, the calibration score
 
 Because the examples are kept, you can retrain on new data and continue where you left off. `train category.json new.jsonl --auto` starts from the stored examples and adds borderline cases from the new data, so a category can follow a feed as it changes. Fixing one wrong label is one command: `add category.json data.jsonl <id> -` moves that record to the negatives and refits. With `--dry-run` it shows which records would change side first.
 
-The same examples calibrate the scores, with conformal prediction. Each example gets a score from a version of `w` trained without it (5-fold cross-validation), so it behaves like a score for an unseen post. For a new post with raw score s, semlabel checks what share of known matches scored s or lower, and what share of known non-matches scored s or higher. If almost no real match scores that low, it's probably not a match. If almost no non-match scores that high, it probably is. The reported confidence is the first share divided by the sum of both, with a small shared smoothing term. It goes from 0 to 1, grows with the raw score, and does not depend on having labeled more non-matches than matches.
+The same examples calibrate the scores, with conformal prediction. Each example gets a score from a version of `w` trained without it (5-fold cross-validation), so it behaves like a score for an unseen text. For a new text with raw score s, semlabel checks what share of known matches scored s or lower, and what share of known non-matches scored s or higher. If almost no real match scores that low, it's probably not a match. If almost no non-match scores that high, it probably is. The reported confidence is the first share divided by the sum of both, with a small shared smoothing term. It goes from 0 to 1, grows with the raw score, and does not depend on having labeled more non-matches than matches.
 
 So every category gets its own threshold. On my categories, confidence 0.5 corresponds to raw cosines between -0.06 and +0.08, and one fixed cutoff would be wrong for most of them.
 
