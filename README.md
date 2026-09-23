@@ -1,17 +1,19 @@
 # semlabel
 
-**Semantic text classification you train once and run for free.** You describe a concept in plain language. An LLM labels a few hundred examples from your own data, and semlabel condenses those labels into a single vector. From then on, classifying a record is one embedding plus one dot product per concept, turned into a confidence calibrated on that concept's own examples. It runs locally on CPU and reads and writes JSONL, so it fits in shell pipelines.
+semlabel labels text with categories you describe in plain English. An LLM labels a few hundred examples from your data once, then semlabel does the rest locally, in about 10 ms per record, with no more LLM calls.
 
 ```bash
-./semlabel train concepts/ai_hardware.json posts.jsonl --auto   # an LLM labels ~150–400 examples, once
-./semlabel tag concepts/ today.jsonl > tagged.jsonl             # every concept, ~10 ms per record
+./semlabel train concepts/ai_hardware.json posts.jsonl --auto   # LLM labels examples, once
+./semlabel tag concepts/ today.jsonl > tagged.jsonl             # runs locally from now on
 ```
 
-Each record comes back with a confidence per concept (example output):
+Every record gets a confidence from 0 to 1 per category (example output):
 
 ```json
 {"id": "a1b2", "title": "New inference chip claims 3x lower cost per token", "tags": {"ai_hardware": 0.97, "slop": 0.04}}
 ```
+
+I built it to filter my news feeds. I had many categories and thousands of posts a day, and running an LLM on every post was slow and expensive for what is basically a sorting job.
 
 ## Install
 
@@ -20,139 +22,115 @@ git clone https://github.com/horiacristescu/semlabel.git && cd semlabel
 ./install.sh
 ```
 
-`install.sh` sets up `.venv/` (with [uv](https://docs.astral.sh/uv/) if present, otherwise `python3 -m venv` + pip) and downloads the embedding model: `Snowflake/snowflake-arctic-embed-xs`, about 90 MB, cached in `~/.cache/huggingface`. It then runs a smoke test and checks for the `claude` CLI. After that everything runs offline; set `HF_HUB_OFFLINE=1` to guarantee it.
+This creates a virtual environment (with [uv](https://docs.astral.sh/uv/) if you have it, pip otherwise), downloads a small embedding model (Snowflake/snowflake-arctic-embed-xs, 90 MB) and runs a quick test. After that it works offline.
 
-- **Python 3.12+.** On a CPU-only Linux machine, install the CPU build of PyTorch first (`pip install torch --index-url https://download.pytorch.org/whl/cpu`). The default build bundles CUDA and is large.
-- **Optional: the [`claude` CLI](https://docs.claude.com/en/docs/claude-code)** for automatic labeling during training (`train --auto`). It uses your Claude Code default model. Without it, you label examples yourself: at a prompt, or by id with `add`.
-- `./semlabel` is a wrapper around `src/semlabel.py` and the `.venv` next to it. Symlink it onto your `PATH` to call it from anywhere.
+You need Python 3.12+. For training you want the [claude CLI](https://docs.claude.com/en/docs/claude-code), which does the labeling with your default Claude Code model. Without it you can label the examples yourself.
+
+On Linux without a GPU, install the CPU build of PyTorch first (`pip install torch --index-url https://download.pytorch.org/whl/cpu`), the default one bundles CUDA and is several GB.
 
 ## Compared with Jev
 
-[Jev](https://flaviocopes.com/jev/) from TypeSafe AI solves the same problem: you give it a piece of text and a question, and it gives back a label with a probability. It's a large general model behind a hosted API, and you ask it again for every post. semlabel instead has an LLM label a few hundred of your posts once, learns a small vector per label from them, and runs locally from then on.
+[Jev](https://flaviocopes.com/jev/) by TypeSafe AI does the same kind of job. You send text and a question, it sends back an answer with a probability. The difference is that Jev is a big hosted model you call for every post and every question, while semlabel asks the LLM once, at training time, and then runs on your machine.
 
 ### How fast is it?
 
-**About 10 ms per post on a laptop CPU, and adding labels is free.** A post is embedded once, and then each label is a single multiplication. Checking one label or twenty takes the same time.
+About 10 ms per post on a laptop CPU. Almost all of that is computing the post's embedding. Checking it against a category is one dot product, so 20 categories cost about the same as one.
 
 | | Jev | semlabel |
 |---|---|---|
-| Label one post | ~100 ms | ~10 ms |
-| Check one post against 20 labels | 20 calls, ~2 s | still ~10 ms |
-| Label a million posts, 20 labels each | 20 million API calls | ~2.5 hours on one laptop (17 minutes for titles only) |
-| Re-label an archive after changing a label | all of it again | seconds, since the embeddings are cached |
+| Label one post | about 100 ms | about 10 ms |
+| One post, 20 labels | 20 calls, about 2 s | still about 10 ms |
+| A million posts, 20 labels each | 20 million API calls | about 2.5 hours on one laptop, 17 minutes if you only use titles |
+| Re-label an archive after changing a label | everything again | a few seconds, embeddings are cached |
 
 ### How much does it cost?
 
-**Training a label takes about 15,000 LLM tokens, once. Running it costs nothing.**
+Training a category takes about 15,000 LLM tokens in 5 short calls. After that it is free.
 
 | | Jev | semlabel |
 |---|---|---|
-| Setting up a label | nothing; you write the question | about 15,000 LLM tokens, once (5 short `claude -p` calls) |
-| A million posts, one label | ~$11 | $0 |
-| A million posts, 20 labels | ~$230 | $0 |
-| Changing your mind about a label | nothing to redo | retrain that label: another ~15,000 tokens |
+| Set up a label | nothing, you write the question | about 15,000 LLM tokens, once |
+| A million posts, one label | about $11 | $0 |
+| A million posts, 20 labels | about $230 | $0 |
+| Change a label's definition | nothing to redo | retrain, another 15,000 tokens |
 
-Jev's costs assume posts of about 1,000 characters (~270 tokens) at its published $0.042 per million input tokens. They don't count the question itself. With a Claude subscription, the training calls come out of your plan.
+The Jev numbers assume posts of about 1,000 characters (270 tokens) at their published $0.042 per million input tokens, not counting the question. With a Claude subscription the training calls come out of your plan.
 
-### Do I need the cloud, or a powerful machine?
+### Do I need the cloud or a powerful machine?
 
-**No. Any laptop from the last several years is enough.** semlabel runs on the CPU, and no GPU is needed.
-
-- **Memory:** about 0.5 GB of RAM while running.
-- **Disk:** about 0.75 GB, most of it PyTorch; the model itself is 90 MB.
-- **Network:** only for installing and for training with `--auto`. Tagging, search and everything else run offline, so your data never leaves the machine.
-
-Jev is hosted only: every post you classify is sent to its API.
+No. It runs on CPU, no GPU needed, about 0.5 GB of RAM and 0.75 GB of disk (mostly PyTorch). It only needs the network to install and to train with `--auto`. Labeling runs offline, so your data never leaves your machine. With Jev every post goes to their API.
 
 ### Can I trust the scores?
 
-**semlabel's scores are calibrated on your own data, and it shows you how well they hold up. Jev's are calibrated on data TypeSafe generated, and there's no way to recalibrate them on yours.**
+This is the part I care about most. A confidence score is only useful if it was calibrated on data like yours.
 
-What TypeSafe says about Jev:
+Jev is trained with what TypeSafe calls RLCD, reinforcement learning that rewards the model when its stated probability matches how often it is right. The training data is synthetic. The founder said "We made an early bet that we will be making all of our data" ([source](https://en.wikipedia.org/wiki/Jev_(AI_model))). There is no paper, no reward function, no dataset description and no calibration numbers. Everyone gets the same weights, and "Jev is not fine-tuned or LoRA-adapted with customer data" ([docs](https://docs.typesafe.ai/models)), so the only way to adapt it is the prompt. Their own docs list "weak numerical calibration" for score questions as a known weak spot ([docs](https://docs.typesafe.ai/model-jaggedness/jev-1.13)).
 
-- It's trained with RLCD, reinforcement learning that rewards a stated probability for matching how often the answer is actually right. There's no paper, reward function, dataset description or calibration figure.
-- The training data is synthetic. The founder: *"We made an early bet that we will be making all of our data"* ([source](https://en.wikipedia.org/wiki/Jev_(AI_model))).
-- The same weights serve every customer. *"Jev is not fine-tuned or LoRA-adapted with customer data"* ([docs](https://docs.typesafe.ai/models)). You can adapt it only through the prompt.
-- Its own list of known weak spots includes *"weak numerical calibration"* for score answers, and yes/no probabilities that aren't mutually consistent ([docs](https://docs.typesafe.ai/model-jaggedness/jev-1.13)).
+Independent tests are mixed. On public benchmarks the probabilities were very good. On rule-based support tickets Jev had not seen, the calibration error was 4.4 times the noise floor, and on one task it claimed 74% confidence while being right 45% of the time ([study](https://github.com/scienthoon/jev-ood-calibration)). Yes/no answers came out underconfident and choice answers overconfident, and the same model looked overconfident on one dataset and underconfident on another ([audit](https://github.com/jujumilk3/jev-calibration-audit)). So you can't fix it with one threshold. On a narrow task, rating the risk of agent tool calls, one tester found it good enough to route on ([benchmark](https://webofmike.com/jev-benchmark/)).
 
-What independent tests found:
+When people got Jev to work well, they brought their own labels. In a phishing test one Jev question was right 62.6% of the time, and five questions plus a small regression trained on labeled emails got 95%. As the author put it, "The 95% is not Jev. It is Jev plus your labelled data plus a regression you maintain" ([article](https://www.beri.net/article/typesafe-jev-typed-decision-model-calibration-decomposition-shadow-eval)). TypeSafe's own [cookbook](https://docs.typesafe.ai/cookbooks/autoresearch_feature_discovery) does the same, training a separate model on your labels using Jev answers as inputs.
 
-- **Well calibrated on familiar ground, off on new ground.** On public benchmarks, Jev's calibration error was about as low as the noise floor. On rule-based support tickets it hadn't seen, the error was 4.4× the floor. On one task, it claimed about 74% confidence and was right 45% of the time ([study](https://github.com/scienthoon/jev-ood-calibration)).
-- **The error changes direction.** Yes/no answers came out underconfident, while choice and score answers came out overconfident. The same model looked under-confident on one dataset and over-confident on another ([study](https://github.com/scienthoon/jev-ood-calibration), [audit](https://github.com/jujumilk3/jev-calibration-audit)). A single fixed threshold can't correct for both.
-- **It can work well on a narrow task.** One agent tool-call risk test found the confidence good enough to route on ([benchmark](https://webofmike.com/jev-benchmark/)).
-- **The fix is always your own labels.** One phishing test went from 62.6% with a single Jev question to 95% with five questions plus a regression trained on labeled examples: *"The 95% is not Jev. It is Jev plus your labelled data plus a regression you maintain"* ([article](https://www.beri.net/article/typesafe-jev-typed-decision-model-calibration-decomposition-shadow-eval)). TypeSafe's own [cookbook](https://docs.typesafe.ai/cookbooks/autoresearch_feature_discovery) does the same thing: it trains a separate model on your labels, using Jev's answers as inputs.
-
-semlabel builds that last step in. Every label keeps the examples it was trained on, and computes its confidence from them:
-
-- A confidence of **0.95** means the post scored higher than almost every known non-match and as high as a typical known match. Both comparisons use *your* examples for *this* label.
-- `show` reports how often the label is right on examples it wasn't trained on, so you know how far to trust it before you rely on it.
-- When a label is wrong, you can see why (the examples are right there) and fix it: move a post to the other side with `add`, and the label is refit and recalibrated in a second.
-
-Core idea 3 below explains how the calibration works.
+semlabel just starts there. Each category keeps its labeled examples and computes confidence from them. A confidence of 0.95 means the post scored higher than almost all known non-matches and as high as a typical known match, for that category, on your data. `show` tells you how often a category is right on examples it was not trained on. When a label is wrong you can look at the examples behind it and fix it with `add`, which refits and recalibrates in about a second.
 
 ### Which should I use?
 
-- **Jev, or an LLM,** when the question changes on every call, when you have no data to learn from, or when the answer takes real reasoning, such as "is this claim true?".
-- **semlabel** when the labels are stable and there's a lot of text, the data has to stay on your machine, or you want to see why a post got its label.
-- **Both together:** an LLM, or Jev, labels the training examples, and semlabel turns those labels into a classifier that costs nothing to run.
+Jev or an LLM when the question changes every time, when you have no data, or when the answer needs real reasoning, like "is this claim true". semlabel when the categories are stable and there is a lot of text, when the data must stay local, or when you want to see why something got its label. You can also combine them: let the LLM or Jev label the training examples and let semlabel do the daily work.
 
-Jev's figures are from public descriptions of TypeSafe's published numbers, as of September 2026. The semlabel figures were measured on an Apple M5 Pro, CPU only, with real posts averaging about 1,000 characters. There's a breakdown under [Benchmark details](#benchmark-details).
+Jev numbers are from TypeSafe's published figures and the tests linked above, as of September 2026. semlabel numbers are measured on an Apple M5 Pro, CPU only, with real posts of about 1,000 characters. Details under [Benchmark details](#benchmark-details).
 
-## Core idea 1: move the reasoning to training time
+## Core idea 1: do the reasoning at training time
 
-An LLM classifier reads every record at inference time, so you pay for reasoning on every item, forever. A single-pass classifier like Jev is fast, but it never reads its own output back. It can't work through a judgment step by step, and whatever it misses stays missed.
+If you run an LLM on every record, you pay for reasoning on every record, forever. A one-pass model like Jev is cheaper, but it reads the input once and answers. It can't think in steps and never sees its own answer.
 
-semlabel puts the reasoning where it can iterate, and runs it once. Training is active learning, with an LLM (`claude -p`) as the labeler:
+I moved the reasoning into training, where it happens once and can iterate. The LLM (`claude -p`) labels the 50 records closest to your description. semlabel fits a classifier on those labels, then sends the LLM the 40 records it is least sure about, the ones near the boundary. The new labels move the boundary, the next round asks about what became uncertain, and after 3 to 5 rounds it settles. What remains is a vector, and labeling a new post is a dot product with it.
 
-1. **Seed.** The concept description is embedded, and the 50 closest records (with near-duplicates removed) go to the LLM, which labels each one positive or negative against the description.
-2. **Fit.** A linear classifier is fit on the labels so far (core idea 2).
-3. **Refine.** The next 40 records are the ones nearest the current boundary, where the classifier is least sure. The LLM labels them, and the classifier is refit. Each round's labels move the boundary, and the next round asks about the records that move made uncertain. It usually settles in 3 to 5 rounds.
+The limit is that a category must be something a linear boundary can separate in embedding space. Topics and styles work well, like AI hardware news, clickbait or sports. Things that need thinking about a specific post don't work, like whether a claim is true or whether a post contradicts the previous one. If a category stays bad after a few corrections, use an LLM for it.
 
-The judgment happens at training time, where a capable model can take its time. What ships to production is a lookup: no LLM call, no network, about 10 ms per record, plus almost nothing for each further concept.
+## Core idea 2: the classifier is an embedding
 
-The trade-off is expressiveness. A linear direction captures *topics* and *registers* well, such as "AI hardware news", "clickbait" or "sports coverage". It can't capture judgments that require reasoning about a particular record, like "is this claim true" or "does this contradict the previous post". If a concept stays poor after a few rounds of corrections, it probably isn't linear in the embedding space, and it belongs with an LLM.
+A linear classifier on embeddings is just a weight vector with the same shape as the embeddings. semlabel fits it by ridge regression on +1/-1 labels, with class balancing and no bias term, and normalizes it to length 1. So a category is a unit vector `w` in the same space as the records, and a record's raw score is its cosine with `w`.
 
-## Core idea 2: regression induces concept vectors that act like regular embeddings
+You can use `w` like any other embedding, for example as a query in a vector database built with the same model. It often finds the clear members of a category better than the description does. On my data the science vector found a receptor study and a new bamboo plastic, while searching with the science description found an AI benchmark post and a date header.
 
-A trained linear classifier on embeddings is just its weight vector, and that vector lives in the same space as the embeddings. semlabel fits it with ridge regression on targets +1/−1, with class-balanced sample weights and **no bias term**, then normalizes it to unit length. So the concept *is* an embedding-shaped vector `w`, and a record's raw score is `embedding · w`, a cosine.
+Interestingly, `w` is almost orthogonal to its own description (cosine 0.0 to 0.1). The regression removes what all posts have in common and keeps what separates matches from non-matches. Raw scores are small even for clear matches, it is the ranking that matters.
 
-- **Use it anywhere an embedding goes.** `w` works as a query vector in any vector index built with the same model. Ranking records by `w` retrieves the concept's clearest members. It often does this better than embedding the description itself. On our data, the "science" concept vector surfaced a receptor study and a new bamboo plastic, while its description, embedded as a query, surfaced an ARC-AGI post and a date header.
-- **A direction, not a location.** `w` is nearly orthogonal to the embedding of its own description (cosine about 0.0–0.1). Regression removes what all texts have in common and keeps what separates members from non-members. Absolute scores are small, but the ranking is sharp.
-- **Concepts are comparable.** The cosine between two concept vectors measures their overlap. On our concepts, "health" and "science" come out at +0.41, while "slop" and "web media" come out at −0.16. Overlap between concepts is structural (many posts span two topics), not a bug.
-- **A boundary, not just a center.** A nearest-centroid approach knows where a topic is. The regression also learns where it *ends*, because most of its labels are hard negatives: records that look related but aren't.
+You can also compare categories by the cosine between their vectors. On my data health and science are +0.41, clickbait and web media -0.16. Many posts belong to two topics, so some overlap is normal.
 
-## Core idea 3: each concept carries its own training set
+And because most training examples are near misses, posts that look related but aren't, `w` learns where a category ends, not only where it is.
 
-A concept file holds the description, every labeled example, the calibration scores, and `w`. Everything that defines the concept travels with it.
+## Core idea 3: each category carries its training data
 
-- **Retraining on new data is incremental.** `train concept.json new.jsonl --auto` starts from the stored examples, matched by id or re-embedded from their stored text, and adds boundary cases from the new data. A concept can follow a drifting feed without starting over.
-- **Corrections are local.** `add concept.json data.jsonl <id> -` moves one record to the negatives and refits. `--dry-run` shows which records would change sides first.
-- **Scores are calibrated by the training set itself (conformal prediction).** Each labeled example gets a *held-out* score from a `w` fit without it (5-fold cross-validation). A new record's raw score `s` is ranked against those held-out scores:
-  - **FN side:** the share of known positives that scored ≤ `s`. When it's low, real members rarely score this low.
-  - **FP side:** the share of known negatives that scored ≥ `s`. When it's low, non-members rarely score this high.
+A category file has the description, all labeled examples, the calibration scores and `w`.
 
-  `tag` reports the confidence `p_pos / (p_pos + p_neg)`, where `p_pos` and `p_neg` are those two shares, with a shared smoothing term so neither class dominates the tails. It runs from 0 to 1, increases with the raw score, and doesn't depend on how many examples of each class were labeled. Each concept gets its own threshold from its own data: on our concepts, confidence 0.5 falls anywhere from −0.06 to +0.08 in raw cosine. A single global threshold can't make that per-concept correction.
+Because the examples are kept, you can retrain on new data and continue where you left off. `train category.json new.jsonl --auto` starts from the stored examples and adds borderline cases from the new data, so a category can follow a feed as it changes. Fixing one wrong label is one command: `add category.json data.jsonl <id> -` moves that record to the negatives and refits. With `--dry-run` it shows which records would change side first.
 
-What the confidence means in practice:
+The same examples calibrate the scores, with conformal prediction. Each example gets a score from a version of `w` trained without it (5-fold cross-validation), so it behaves like a score for an unseen post. For a new post with raw score s, semlabel checks what share of known matches scored s or lower, and what share of known non-matches scored s or higher. If almost no real match scores that low, it's probably not a match. If almost no non-match scores that high, it probably is. The reported confidence is the first share divided by the sum of both, with a small shared smoothing term. It goes from 0 to 1, grows with the raw score, and does not depend on having labeled more non-matches than matches.
 
-- **0.5 is a balanced point.** The score is equally typical of the concept's positives and its negatives. It ignores how common the concept is, so for a rare concept `> 0.5` flags more than you want. Use **`> 0.9`** for precision, and treat 0.5–0.9 as a band to review.
-- **It's rank-based, not an exact probability.** Conformal prediction assumes the calibration examples look like the data being tagged. Active learning oversamples boundary cases, so the confidence is sharpest near the boundary and approximate elsewhere. It is still measured on your data, for this concept, and you can check it.
-- **The held-out numbers are honest lower bounds.** `show` prints held-out recall and specificity. They're measured on the concept's hardest examples, so accuracy on the full stream is higher.
+So every category gets its own threshold. On my categories, confidence 0.5 corresponds to raw cosines between -0.06 and +0.08, and one fixed cutoff would be wrong for most of them.
 
-`tag --raw` outputs the uncalibrated cosine.
+How to read the numbers:
+
+- 0.5 means the score is as typical of matches as of non-matches. It ignores how rare the category is, so for rare categories `> 0.5` flags too much. Use 0.9 for precision and review what falls between 0.5 and 0.9.
+- It is based on ranks, so treat it as a calibrated score and don't read it as an exact probability. Most training examples are borderline, so calibration is best near the boundary and rougher far from it.
+- `show` prints recall and specificity on held-out examples. These are the hardest examples the category has, so on normal data it does better.
+
+`tag --raw` gives the plain cosine.
 
 ## Usage patterns
 
-Anywhere you'd otherwise run an LLM over every item to sort text into stable categories:
+Anywhere you would pay an LLM to sort every item into the same few categories.
 
-- **News and social feeds.** Tag every incoming post against a set of concepts, like "AI hardware", "policy", "clickbait" or "genuine research result", and filter, rank or route on the confidences. Training uses a day or two of the feed. After that, each new day costs about 10 ms per post, and concepts are retrained as the feed drifts.
-  ```bash
-  ./semlabel tag concepts/ today.jsonl | jq -c 'select(.tags.slop < 0.2 and .tags.ai_hardware > 0.9)'
-  ```
-- **Agent outputs.** Agents produce far more text than anyone reads: transcripts, tool outputs, final reports, logs. Concepts like "stuck in a retry loop", "refused or gave up", "asks the user for input", "touches credentials" or "off-task" can triage thousands of runs in seconds, pick which transcripts a human or an LLM judge should read, or annotate chunks of context by type before they reach a model. All of these are about the *kind* of text, which is what a linear concept captures well. Whether the agent was *right* is a reasoning question, and still needs a judge.
-- **Large text collections.** Archives, support tickets, documents, a scraped corpus, or eval and fine-tuning data. `discover` and `search` show what's in the collection. A handful of concepts slices it, and because embeddings are cached, re-tagging the whole collection after a concept changes takes seconds, not a new LLM bill. The labeled examples each concept accumulates double as a small, curated eval set for that category.
+News and social feeds, which is what I built it for. Train categories like AI hardware, policy, clickbait or real research on a day or two of posts, then tag each new day and filter on the scores:
 
-A record is a JSON object with a `title` and optional `comments` (see *Input format*). Map other schemas with one `jq` line.
+```bash
+./semlabel tag concepts/ today.jsonl | jq -c 'select(.tags.slop < 0.2 and .tags.ai_hardware > 0.9)'
+```
+
+Agent outputs. Agents write much more than anyone reads: transcripts, tool outputs, reports, logs. Categories like "stuck retrying the same thing", "gave up", "asks the user for input", "touches credentials" or "went off task" can sort thousands of runs in seconds and pick the ones a human or an LLM judge should read. These are about what kind of text it is, which works well with linear categories. Whether the agent got the right answer is a different question and still needs a judge.
+
+Large text collections, like archives, support tickets, documents, or datasets for evals and fine-tuning. `discover` clusters the collection so you see what's in it, `search` finds examples, and a few categories slice it. Embeddings are cached, so re-tagging everything after changing a category takes seconds. The labeled examples of each category also work as a small checked eval set.
+
+Records need a `title` and optionally `comments` (see Input format below). If your data has other field names, one `jq` command converts it.
 
 ## Reference
 
@@ -199,7 +177,7 @@ cat today.jsonl | ./semlabel tag concepts/ | jq -c 'select(.tags.ai_hardware > 0
 | Command | What it does |
 |---|---|
 | `train CONCEPT DATA [--auto]` | Active-learning training (above). Re-running continues from the existing labels, which is also how you extend a concept to new data. `--trace FILE` logs LLM prompts and replies; `--log-texts FILE` logs the exact embedded texts. |
-| `tag CONCEPTS [DATA]` | Adds `"tags": {"concept": confidence, ...}` to each record (0–1, conformal; `--raw` for the cosine). `CONCEPTS` is a file or a directory; untrained concepts are skipped. Reads stdin when `DATA` is omitted (all of it before writing output, so it batches rather than streams). `--tag-name NAME` renames the field. |
+| `tag CONCEPTS [DATA]` | Adds `"tags": {"concept": confidence, ...}` to each record (0 to 1, conformal; `--raw` for the cosine). `CONCEPTS` is a file or a directory; untrained concepts are skipped. Reads stdin when `DATA` is omitted (all of it before writing output, so it batches rather than streams). `--tag-name NAME` renames the field. |
 | `search QUERY DATA [-k N] [--id]` | Nearest neighbors by cosine similarity, printed as JSONL with `_score`. With `--id`, `QUERY` is a record id ("more like this"). No concept needed. |
 | `discover DATA [-n N] [-k K]` | k-means into `N` clusters, `K` examples each. A quick survey of what a dataset contains. |
 | `add CONCEPT DATA ID +/- ...` | Adds records as positives (`+`) or negatives (`-`), then refits `w` and the calibration. `--dry-run` shows which records would change sides. |
@@ -222,7 +200,7 @@ Apple M5 Pro, CPU only, default model, real posts averaging 1,070 characters. Pe
 | Starting up (loading the model) | 4.2 s, once. `embed-server` keeps the model loaded between calls |
 | Embedding one post | 11 ms for full text, 5 ms for a title |
 | Embedding in bulk | 109 posts/s full text, about 1,000/s titles |
-| Scoring 20 labels | 0.15 ms for one post; 1.2 µs per post in bulk (16 million decisions/s) |
+| Scoring 20 labels | 0.15 ms for one post; 1.2 microseconds per post in bulk (16 million decisions/s) |
 
 Embedding takes nearly all of the time. Scoring is so cheap that the number of labels hardly matters.
 
@@ -241,24 +219,24 @@ The quickest test for a candidate is to train one concept you care about with ea
 
 To switch models, set `MODEL_NAME` at the top of `src/semlabel.py`. If the new model's dimension isn't 384, also replace the `384` literals in the same file (`grep -n 384 src/semlabel.py`). Also set `QUERY_PREFIX`, the text added to search queries and concept descriptions before they're embedded. Arctic-embed and BGE models expect an instruction prefix there (see the model card). Symmetric models like MiniLM expect `""`. Then:
 
-- **Retrain every concept.** A concept vector only means something in the space of the model that produced it. The file records the model in its `model` field.
-- **Delete the `*.embeds.npy` caches.** They don't record which model produced them.
-- **Restart the embed server** if it's running (`./semlabel embed-stop`).
+- Retrain every concept. A concept vector only means something in the space of the model that produced it. The file records the model in its `model` field.
+- Delete the `*.embeds.npy` caches. They don't record which model produced them.
+- Restart the embed server if it's running (`./semlabel embed-stop`).
 
 ## Using it from Claude Code
 
-`skills/semlabel/SKILL.md` is a [Claude Code skill](https://docs.claude.com/en/docs/claude-code/skills) that teaches an agent the whole workflow: survey the data, write a concept description, train, inspect, correct labels by id, and tag new data with sensible thresholds. It also covers the **agent-as-labeler** mode. There, the agent reads candidates from `search`, labels them itself with `add`, and repeats on the uncertain band, with no separate `claude -p` calls. To install it:
+`skills/semlabel/SKILL.md` is a [Claude Code skill](https://docs.claude.com/en/docs/claude-code/skills) that teaches an agent the whole workflow: survey the data, write a concept description, train, inspect, correct labels by id, and tag new data with sensible thresholds. It also covers using the agent itself as the labeler: the agent reads candidates from `search`, labels them itself with `add`, and repeats on the uncertain band, with no separate `claude -p` calls. To install it:
 
 ```bash
 mkdir -p ~/.claude/skills && ln -s "$PWD/skills/semlabel" ~/.claude/skills/semlabel
 ```
 
-Then ask Claude Code something like *"use semlabel to build a concept for AI hardware news from data.jsonl and tag today's feed"*. The skill expects `SEMLABEL` to point at the `semlabel` wrapper in this repo.
+Then ask Claude Code something like "use semlabel to build a concept for AI hardware news from data.jsonl and tag today's feed". The skill expects `SEMLABEL` to point at the `semlabel` wrapper in this repo.
 
 ## Limitations
 
-- Concepts are linear. They capture topics and styles, not judgments that need reasoning about the content.
-- Confidences are rank-based and calibrated on a boundary-heavy sample, not exact probabilities. 0.5 ignores the base rate; use a higher cutoff for rare concepts.
+- Concepts are linear. They capture topics and styles. Judgments that need reasoning about the content need an LLM.
+- Confidences are rank-based and calibrated on mostly borderline examples, so read them as scores and don't take them as exact probabilities. 0.5 ignores the base rate, so use a higher cutoff for rare concepts.
 - Input is truncated at 2000 characters. Long documents are represented by their beginning.
 - Training is only as good as the labels. With `--auto`, precision depends on the description being specific enough for the LLM to judge edge cases.
 
